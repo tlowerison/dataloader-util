@@ -1,0 +1,25 @@
+[workspace]
+members = [
+  "dataloader-util",
+  "dataloader-util-core",
+  "dataloader-util-proc-macros",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-backtrace = "0.2"
+async-trait = "0.1"
+convert_case = "0.6"
+dataloader-util-core = { path = "dataloader-util-core" }
+dataloader-util-proc-macros = { path = "dataloader-util-proc-macros" }
+futures = "0.3"
+itertools = "0.10"
+proc-macro2 = "1.0"
+quote = "1.0"
+scoped-futures = "0.1"
+syn = { version = "1.0", features = ["extra-traits", "printing"] }
+

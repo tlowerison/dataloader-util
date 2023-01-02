@@ -1,0 +1,15 @@
+[package]
+name = "dataloader-util-proc-macros"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-backtrace.workspace = true
+convert_case.workspace = true
+itertools.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[lib]
+proc-macro = true

@@ -1,0 +1,8 @@
+[package]
+name = "dataloader-util"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dataloader-util-core.workspace = true
+dataloader-util-proc-macros.workspace = true
