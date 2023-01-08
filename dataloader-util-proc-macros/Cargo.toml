@@ -13,3 +13,11 @@ syn.workspace = true
 
 [lib]
 proc-macro = true
+
+[features]
+tracing = []
+tracing-debug = []
+tracing-error = []
+tracing-info = []
+tracing-trace = []
+tracing-warn = []

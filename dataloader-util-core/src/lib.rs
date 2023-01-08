@@ -1,11 +1,13 @@
+pub use async_backtrace;
+pub use async_trait;
+pub use derivative::Derivative as DataloaderUtilDerivative;
+
+use cfg_if::cfg_if;
 use futures::future::try_join_all;
 use itertools::Itertools;
 use scoped_futures::*;
 use std::collections::HashMap;
 use std::hash::Hash;
-
-pub use async_backtrace;
-pub use async_trait;
 
 /// `'static` lifetime imposed by [async_graphql::dataloader::Loader](https://docs.rs/async-graphql/latest/async_graphql/dataloader/trait.Loader.html)
 pub struct BaseLoader<Ctx: 'static> {
@@ -68,20 +70,23 @@ where
         .iter()
         .group_by(|x| group_by(**x))
         .into_iter()
-        .map(|(group, keys)| (group, keys.map(|x| *x).collect()))
+        .map(|(group, keys)| (group, keys.copied().collect()))
         .collect::<Vec<(G, Vec<&'a K>)>>();
 
-    Ok(try_join_all(
-        grouped_keys
-            .iter()
-            .map(|(group, keys)| async move { fetch(group, keys).await.map(|key_values| (group, key_values)) })
-    )
+    Ok(
+        try_join_all(grouped_keys.iter().map(|(group, keys)| async move {
+            fetch(group, keys)
+                .await
+                .map(|key_values| (group, key_values))
+        }))
         .await?
         .into_iter()
         .flat_map(|(group, key_values)| {
             let mut grouped_values = HashMap::<K, Vec<V>>::default();
             for key_value in key_values {
-                let (key, value) = unload(&group, key_value);
+                let (key, value) = unload(group, key_value);
+
+                #[allow(clippy::map_entry)]
                 if !grouped_values.contains_key(&key) {
                     grouped_values.insert(key, vec![value]);
                 } else {
@@ -90,9 +95,9 @@ where
             }
             grouped_values.into_iter()
         })
-        .collect())
+        .collect(),
+    )
 }
-
 
 #[async_backtrace::framed]
 pub async fn dataload_many_group_none<'a, K, V, E, F>(
@@ -104,24 +109,24 @@ where
     for<'r> F: Copy + Fn(&'r &'a K) -> ScopedBoxFuture<'a, 'r, Result<Vec<V>, E>>,
 {
     Ok(try_join_all(
-        keys
-            .iter()
-            .map(|key| async move { fetch(key).await.map(|values| (key, values)) })
+        keys.iter()
+            .map(|key| async move { fetch(key).await.map(|values| (key, values)) }),
     )
-        .await?
-        .into_iter()
-        .flat_map(|(key, values)| {
-            let mut grouped_values = HashMap::<K, Vec<V>>::default();
-            for value in values {
-                if !grouped_values.contains_key(&key) {
-                    grouped_values.insert((**key).clone(), vec![value]);
-                } else {
-                    grouped_values.get_mut(&key).unwrap().push(value);
-                }
+    .await?
+    .into_iter()
+    .flat_map(|(key, values)| {
+        let mut grouped_values = HashMap::<K, Vec<V>>::default();
+        for value in values {
+            #[allow(clippy::map_entry)]
+            if !grouped_values.contains_key(key) {
+                grouped_values.insert((**key).clone(), vec![value]);
+            } else {
+                grouped_values.get_mut(key).unwrap().push(value);
             }
-            grouped_values.into_iter()
-        })
-        .collect())
+        }
+        grouped_values.into_iter()
+    })
+    .collect())
 }
 
 #[async_backtrace::framed]
@@ -142,18 +147,24 @@ where
         .iter()
         .group_by(|x| group_by(**x))
         .into_iter()
-        .map(|(group, keys)| (group, keys.map(|x| *x).collect()))
+        .map(|(group, keys)| (group, keys.copied().collect()))
         .collect::<Vec<(G, Vec<&'a K>)>>();
 
-    Ok(try_join_all(
-        grouped_keys
-            .iter()
-            .map(|(group, keys)| async move { fetch(group, keys).await.map(|key_values| (group, key_values)) })
-    )
+    Ok(
+        try_join_all(grouped_keys.iter().map(|(group, keys)| async move {
+            fetch(group, keys)
+                .await
+                .map(|key_values| (group, key_values))
+        }))
         .await?
         .into_iter()
-        .flat_map(|(group, key_values)| key_values.into_iter().map(|key_value| unload(group, key_value)))
-        .collect())
+        .flat_map(|(group, key_values)| {
+            key_values
+                .into_iter()
+                .map(|key_value| unload(group, key_value))
+        })
+        .collect(),
+    )
 }
 
 #[async_backtrace::framed]
@@ -170,7 +181,8 @@ where
         |key| key,
         |_, keys| fetch(keys),
         |_, key_value| key_value,
-    ).await
+    )
+    .await
 }
 
 #[async_backtrace::framed]
@@ -191,3 +203,59 @@ where
     .await
 }
 
+cfg_if! {
+    if #[cfg(feature = "tracing")] {
+        pub use opentelemetry;
+        pub use tracing;
+        pub use tracing_opentelemetry;
+
+        use opentelemetry::{Context, trace::TraceContextExt};
+        use tracing::Span;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+        pub fn current_trace_context() -> Option<Context> {
+            let context = Span::current().context();
+            let span_ref = context.span();
+            let span_context = span_ref.span_context();
+            if !span_context.is_valid() {
+                return None;
+            }
+            Some(context)
+        }
+
+        pub fn should_use_span_context(contexts: impl IntoIterator<Item = impl AsRef<Option<Context>>>) -> bool {
+            let mut contexts = contexts.into_iter();
+
+            let first = match contexts.next() {
+                Some(first) => first,
+                None => return false,
+            };
+
+            if first.as_ref().is_some() {
+                let first_context = first.as_ref().as_ref().unwrap();
+                let first_span_ref = first_context.span();
+                let first_span_context = first_span_ref.span_context();
+                if !first_span_context.is_valid() {
+                    return false;
+                }
+
+                for key in contexts {
+                    let context = match key.as_ref().as_ref() {
+                        Some(context) => context,
+                        None => return false,
+                    };
+                    let span_ref = context.span();
+                    let span_context = span_ref.span_context();
+                    if !span_context.is_valid() {
+                        return false;
+                    }
+                    if span_context != first_span_context {
+                        return false;
+                    }
+                }
+            }
+
+            true
+        }
+    }
+}
