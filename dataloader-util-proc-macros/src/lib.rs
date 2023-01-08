@@ -224,7 +224,8 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[cfg(feature = "tracing-warn")]
     let span_macro = Some(format_ident!("warn_span"));
 
-    let _span_macro = match span_macro {
+    #[allow(unused_variables)]
+    let span_macro = match span_macro {
         Some(span_macro) => span_macro,
         None => return Error::new(Span::call_site(), "dataloader-util requires a tracing level to be specified using one of the following features: tracing-debug, tracing-error, tracing-info, tracing-trace, tracing-warn. Make sure this matches your application's tracing level otherwise dataloader spans may not be properly reconciled with their parent spans.")
             .into_compile_error()
