@@ -1,3 +1,8 @@
+#![cfg_attr(feature = "unstable", feature(type_alias_impl_trait))]
+
+#[macro_use]
+extern crate derive_more;
+
 pub use async_backtrace;
 pub use async_trait;
 pub use derivative::Derivative as DataloaderUtilDerivative;
@@ -8,6 +13,9 @@ use itertools::Itertools;
 use scoped_futures::*;
 use std::collections::HashMap;
 use std::hash::Hash;
+
+#[cfg(feature = "unstable")]
+use std::fmt::Debug;
 
 /// `'static` lifetime imposed by [async_graphql::dataloader::Loader](https://docs.rs/async-graphql/latest/async_graphql/dataloader/trait.Loader.html)
 pub struct BaseLoader<Ctx: 'static> {
@@ -23,8 +31,116 @@ impl<Ctx: 'static> BaseLoader<Ctx> {
     }
 }
 
-pub type LoadedMany<K, V> = Vec<(K, Vec<V>)>;
-pub type LoadedOne<K, V> = Vec<(K, V)>;
+pub trait LoadedMap {
+    type Value;
+    type Iterator<'a, T> where Self: 'a;
+    fn map_loaded<'a, T, F>(&'a self) -> Self::Iterator<'a, T>
+    where
+        F: FnOnce(&Self::Value) -> T;
+}
+
+#[derive(AsRef, AsMut, Clone, Debug, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd)]
+pub struct LoadedMany<K, V>(pub Vec<(K, Vec<V>)>);
+
+#[derive(AsRef, AsMut, Clone, Debug, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd)]
+pub struct LoadedOne<K, V>(pub Vec<(K, V)>);
+
+impl<K, V> FromIterator<(K, Vec<V>)> for LoadedMany<K, V> {
+    fn from_iter<T: IntoIterator<Item = (K, Vec<V>)>>(iter: T) -> Self {
+        Self(Vec::from_iter(iter))
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for LoadedOne<K, V> {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        Self(Vec::from_iter(iter))
+    }
+}
+
+impl<K, V> IntoIterator for LoadedMany<K, V> {
+    type Item = (K, Vec<V>);
+    type IntoIter = <Vec<(K, Vec<V>)> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<K, V> IntoIterator for LoadedOne<K, V> {
+    type Item = (K, V);
+    type IntoIter = <Vec<(K, V)> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+#[cfg(feature = "unstable")]
+impl<'a, K: Debug + 'a, V: Debug + 'a> IntoIterator for &'a LoadedMany<K, V> {
+    type Item = &'a V;
+    type IntoIter = impl Debug + Iterator<Item = &'a V>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().flat_map(|x| x.1.iter())
+    }
+}
+#[cfg(feature = "unstable")]
+impl<'a, K: Debug + 'a, V: Debug + 'a> IntoIterator for &'a LoadedOne<K, V> {
+    type Item = &'a V;
+    type IntoIter = impl Debug + Iterator<Item = &'a V>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().map(|x| &x.1)
+    }
+}
+
+#[cfg(not(feature = "unstable"))]
+impl<'a, K: 'a, V: 'a> IntoIterator for &'a LoadedMany<K, V> {
+    type Item = &'a V;
+    type IntoIter = std::iter::FlatMap<
+        std::slice::Iter<'a, (K, Vec<V>)>,
+        std::slice::Iter<'a, V>,
+        Box<dyn FnMut(&'a (K, Vec<V>)) -> std::slice::Iter<'a, V> + Send + Sync>,
+    >;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().flat_map(Box::new(|x| x.1.iter()))
+    }
+}
+#[cfg(not(feature = "unstable"))]
+impl<'a, K: 'a, V: 'a> IntoIterator for &'a LoadedOne<K, V> {
+    type Item = &'a V;
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'a, (K, V)>,
+        Box<dyn FnMut(&'a (K, V)) -> &'a V + Send + Sync>,
+    >;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().map(Box::new(|x| &x.1))
+    }
+}
+
+pub trait LoadedIterator {
+    type Item<'a> where Self: 'a;
+    type Iter<'a> where Self: 'a;
+    fn iter(&self) -> Self::Iter<'_>;
+}
+
+impl<K, V> LoadedIterator for LoadedMany<K, V>
+where
+    for<'a> &'a LoadedMany<K, V>: IntoIterator,
+{
+    type Item<'a> = &'a V where Self: 'a;
+    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a;
+    fn iter(&self) -> Self::Iter<'_> {
+        (self).into_iter()
+    }
+}
+impl<K, V> LoadedIterator for LoadedOne<K, V>
+where
+    for<'a> &'a LoadedOne<K, V>: IntoIterator,
+{
+    type Item<'a> = &'a V where Self: 'a;
+    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a;
+    fn iter(&self) -> Self::Iter<'_> {
+        (self).into_iter()
+    }
+}
+
 
 /// Manages grouping keys, fetching their values and unloading key-value pairs fetched into
 /// an acceptable output format for the dataloader utility provided by async-graphql.

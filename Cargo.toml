@@ -18,6 +18,7 @@ cfg-if = "1.0"
 dataloader-util-core = { path = "dataloader-util-core" }
 dataloader-util-proc-macros = { path = "dataloader-util-proc-macros" }
 derivative = "2"
+derive_more = "0"
 futures = "0.3"
 itertools = "0.10"
 opentelemetry = "0"
