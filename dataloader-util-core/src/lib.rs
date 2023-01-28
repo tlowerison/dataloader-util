@@ -33,16 +33,22 @@ impl<Ctx: 'static> BaseLoader<Ctx> {
 
 pub trait LoadedMap {
     type Value;
-    type Iterator<'a, T> where Self: 'a;
+    type Iterator<'a, T>
+    where
+        Self: 'a;
     fn map_loaded<'a, T, F>(&'a self) -> Self::Iterator<'a, T>
     where
         F: FnOnce(&Self::Value) -> T;
 }
 
-#[derive(AsRef, AsMut, Clone, Debug, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd)]
+#[derive(
+    AsRef, AsMut, Clone, Debug, Default, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd,
+)]
 pub struct LoadedMany<K, V>(pub Vec<(K, Vec<V>)>);
 
-#[derive(AsRef, AsMut, Clone, Debug, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd)]
+#[derive(
+    AsRef, AsMut, Clone, Debug, Default, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd,
+)]
 pub struct LoadedOne<K, V>(pub Vec<(K, V)>);
 
 impl<K, V> FromIterator<(K, Vec<V>)> for LoadedMany<K, V> {
@@ -115,8 +121,12 @@ impl<'a, K: 'a, V: 'a> IntoIterator for &'a LoadedOne<K, V> {
 }
 
 pub trait LoadedIterator {
-    type Item<'a> where Self: 'a;
-    type Iter<'a> where Self: 'a;
+    type Item<'a>
+    where
+        Self: 'a;
+    type Iter<'a>
+    where
+        Self: 'a;
     fn iter(&self) -> Self::Iter<'_>;
 }
 
@@ -140,7 +150,6 @@ where
         (self).into_iter()
     }
 }
-
 
 /// Manages grouping keys, fetching their values and unloading key-value pairs fetched into
 /// an acceptable output format for the dataloader utility provided by async-graphql.
