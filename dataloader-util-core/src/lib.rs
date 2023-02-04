@@ -293,7 +293,7 @@ where
 }
 
 #[async_backtrace::framed]
-pub async fn dataload_many_basic<'a, K, V, E, F>(
+pub async fn dataload_many_ungrouped<'a, K, V, E, F>(
     keys: &[&'a K],
     fetch: F,
 ) -> Result<LoadedMany<K, V>, E>
@@ -303,15 +303,15 @@ where
 {
     dataload_many(
         keys,
-        |key| (),
-        |_, keys| fetch(keys),
+        |_| (),
+        |_: &(), keys| fetch(keys),
         |_, key_value| key_value,
     )
     .await
 }
 
 #[async_backtrace::framed]
-pub async fn dataload_one_basic<'a, K, V, E, F>(
+pub async fn dataload_one_individually<'a, K, V, E, F>(
     keys: &[&'a K],
     fetch: F,
 ) -> Result<LoadedOne<K, V>, E>
@@ -321,7 +321,7 @@ where
 {
     dataload_one(
         keys,
-        |key| (),
+        |key| key,
         |key, _| async { fetch(key).await.map(|x| vec![x]) }.scope_boxed(),
         |key, value| ((**key).clone(), value),
     )
