@@ -303,7 +303,7 @@ where
 {
     dataload_many(
         keys,
-        |key| key,
+        |key| (),
         |_, keys| fetch(keys),
         |_, key_value| key_value,
     )
@@ -321,7 +321,7 @@ where
 {
     dataload_one(
         keys,
-        |key| key,
+        |key| (),
         |key, _| async { fetch(key).await.map(|x| vec![x]) }.scope_boxed(),
         |key, value| ((**key).clone(), value),
     )
