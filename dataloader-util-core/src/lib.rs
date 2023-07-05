@@ -1,4 +1,4 @@
-#![cfg_attr(feature = "unstable", feature(type_alias_impl_trait))]
+#![cfg_attr(feature = "unstable", feature(impl_trait_in_assoc_type))]
 
 #[macro_use]
 extern crate derive_more;
