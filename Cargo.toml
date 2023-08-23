@@ -1,8 +1,6 @@
 [workspace]
 members = [
   "dataloader-util",
-  "dataloader-util-core",
-  "dataloader-util-proc-macros",
 ]
 
 [workspace.package]
@@ -15,8 +13,8 @@ async-backtrace = "0.2"
 async-trait = "0.1"
 convert_case = "0.6"
 cfg-if = "1.0"
-dataloader-util-core = { path = "dataloader-util-core" }
-dataloader-util-proc-macros = { path = "dataloader-util-proc-macros" }
+dataloader-util-core.path = "core"
+dataloader-util-proc-macros.path = "proc-macros"
 derivative = "2"
 derive_more = "0"
 futures = "0.3"

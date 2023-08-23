@@ -6,6 +6,8 @@ extern crate quote;
 extern crate syn;
 
 use convert_case::{Case, Casing};
+use derivative::Derivative;
+use derive_more::Display;
 use itertools::interleave;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -18,8 +20,44 @@ macro_rules! fallible {
 
 const ATTRIBUTE_PATH: &str = "dataloader";
 
+#[derive(Clone, Copy, Debug, Derivative, Display)]
+#[derivative(Default)]
+enum TraceLevel {
+    #[display(fmt = "debug")]
+    Debug,
+    #[display(fmt = "error")]
+    Error,
+    #[derivative(Default)]
+    #[display(fmt = "info")]
+    Info,
+    #[display(fmt = "trace")]
+    Trace,
+    #[display(fmt = "warn")]
+    Warn,
+}
+
+impl FromStr for TraceLevel {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match &*s {
+            "debug" => Self::Debug,
+            "error" => Self::Error,
+            "info" => Self::Info,
+            "trace" => Self::Trace,
+            "warn" => Self::Warn,
+            _ => {
+                return Err(Error::new_spanned(
+                    &s,
+                    r#"invalid `trace_level`: must use one of "debug", "error", "info", "trace", "warn" "#,
+                ))
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct DataloaderAttr {
+    trace_level: Option<TraceLevel>,
     value: Option<TokenStream2>,
 }
 
@@ -30,6 +68,7 @@ impl syn::parse::Parse for DataloaderAttr {
             Err(_) => return Ok(Self::default()),
         };
 
+        let mut trace_level = None;
         let mut value = None;
 
         match meta {
@@ -39,6 +78,14 @@ impl syn::parse::Parse for DataloaderAttr {
                         match &nested_meta {
                             syn::NestedMeta::Meta(meta) => match meta {
                                 syn::Meta::NameValue(meta_name_value) => {
+                                    if meta_name_value.path.is_ident("trace_level") {
+                                        match &meta_name_value.lit {
+                                            syn::Lit::Str(lit_str) => {
+                                                trace_level = Some(TraceLevel::from_str(&lit_str.value())?);
+                                            },
+                                            _ => return Err(Error::new_spanned(&meta_name_value.lit, "expected string literal".to_string())),
+                                        }
+                                    }
                                     if meta_name_value.path.is_ident("Value") {
                                         match &meta_name_value.lit {
                                             syn::Lit::Str(lit_str) => {
@@ -94,7 +141,7 @@ impl syn::parse::Parse for DataloaderAttr {
             }
         };
 
-        Ok(Self { value })
+        Ok(Self { trace_level, value })
     }
 }
 
@@ -102,7 +149,10 @@ impl syn::parse::Parse for DataloaderAttr {
 pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item_fn = parse_macro_input!(item as syn::ItemFn);
 
-    let DataloaderAttr { value: value_ty } = parse_macro_input!(attr as DataloaderAttr);
+    let DataloaderAttr {
+        trace_level: _trace_level,
+        value: value_ty,
+    } = parse_macro_input!(attr as DataloaderAttr);
 
     let fn_name = &item_fn.sig.ident;
 
@@ -209,20 +259,11 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[allow(unused)]
     let span_macro = Option::<syn::Ident>::None;
 
-    #[cfg(feature = "tracing-debug")]
-    let span_macro = Some(format_ident!("debug_span"));
+    #[cfg(feature = "tracing")]
+    let trace_level = _trace_level.unwrap_or_default();
 
-    #[cfg(feature = "tracing-error")]
-    let span_macro = Some(format_ident!("error_span"));
-
-    #[cfg(feature = "tracing-info")]
-    let span_macro = Some(format_ident!("info_span"));
-
-    #[cfg(feature = "tracing-trace")]
-    let span_macro = Some(format_ident!("trace_span"));
-
-    #[cfg(feature = "tracing-warn")]
-    let span_macro = Some(format_ident!("warn_span"));
+    #[cfg(feature = "tracing")]
+    let span_macro = Some(format_ident!("{trace_level}_span"));
 
     #[allow(unused_variables)]
     let span_macro = match span_macro {
@@ -353,8 +394,6 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 #[dataloader_util::async_backtrace::framed]
                 async fn load(&self, #keys_ident: &[#key_wrapper_struct_name]) -> Result<std::collections::HashMap<#key_wrapper_struct_name, Self::Value>, Self::Error> {
-                    use diesel::Identifiable;
-
                     let #ctx_ident = self.ctx();
 
                     let #derefed_keys_ident = #keys_ident.iter().map(std::ops::Deref::deref).collect::<Vec<_>>();
