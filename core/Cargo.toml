@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 async-backtrace.workspace = true
+async-graphql.workspace = true
 async-trait.workspace = true
 cfg-if.workspace = true
 dataloader-util-proc-macros.workspace = true

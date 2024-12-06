@@ -10,8 +10,8 @@ edition = "2021"
 
 [workspace.dependencies]
 async-backtrace = "0.2"
+async-graphql = "7"
 async-trait = "0.1"
-convert_case = "0.6"
 cfg-if = "1.0"
 darling = "0.20"
 dataloader-util-core.path = "core"
@@ -24,6 +24,6 @@ opentelemetry = { version = "0.27", default-features = false, features = ["trace
 proc-macro2 = "1.0"
 quote = "1.0"
 scoped-futures = "0.1"
-syn = { version = "2.0", features = ["extra-traits", "printing"] }
+syn = { version = "2.0", features = ["derive", "extra-traits", "printing", "visit-mut"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.28"

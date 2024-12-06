@@ -2,17 +2,19 @@
 extern crate derive_more;
 
 pub use async_backtrace;
+pub use async_graphql;
 pub use async_trait;
 pub use derivative::Derivative as DataloaderUtilDerivative;
 
 use cfg_if::cfg_if;
-use futures::future::try_join_all;
+use futures::future::{try_join_all, BoxFuture};
 use itertools::Itertools;
 use scoped_futures::*;
 use std::collections::HashMap;
 use std::hash::Hash;
 
 /// `'static` lifetime imposed by [async_graphql::dataloader::Loader](https://docs.rs/async-graphql/latest/async_graphql/dataloader/trait.Loader.html)
+#[derive(Clone, Copy, Debug)]
 pub struct BaseLoader<Ctx: 'static> {
     ctx: Ctx,
 }
@@ -24,6 +26,11 @@ impl<Ctx: 'static> BaseLoader<Ctx> {
     pub fn ctx(&self) -> &Ctx {
         &self.ctx
     }
+}
+
+pub trait Spawner {
+    type Ret;
+    fn spawner() -> impl Fn(BoxFuture<'static, ()>) -> Self::Ret + Send + Sync + 'static;
 }
 
 pub trait LoadedMap {
@@ -305,39 +312,11 @@ cfg_if! {
             Some(context)
         }
 
-        pub fn should_use_span_context(contexts: impl IntoIterator<Item = impl AsRef<Option<Context>>>) -> bool {
-            let mut contexts = contexts.into_iter();
-
-            let first = match contexts.next() {
-                Some(first) => first,
-                None => return false,
-            };
-
-            if first.as_ref().is_some() {
-                let first_context = first.as_ref().as_ref().unwrap();
-                let first_span_ref = first_context.span();
-                let first_span_context = first_span_ref.span_context();
-                if !first_span_context.is_valid() {
-                    return false;
-                }
-
-                for key in contexts {
-                    let context = match key.as_ref().as_ref() {
-                        Some(context) => context,
-                        None => return false,
-                    };
-                    let span_ref = context.span();
-                    let span_context = span_ref.span_context();
-                    if !span_context.is_valid() {
-                        return false;
-                    }
-                    if span_context != first_span_context {
-                        return false;
-                    }
-                }
-            }
-
-            true
+        pub fn should_use_span_context(context: Option<&Context>) -> bool {
+            let Some(context) = context else { return true };
+            let span_ref = context.span();
+            let span_context = span_ref.span_context();
+            span_context.is_valid()
         }
     }
 }

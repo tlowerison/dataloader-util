@@ -1,7 +1,6 @@
 #[macro_use]
 extern crate quote;
 
-use ::convert_case::{Case, Casing};
 use ::darling::FromMeta;
 use ::derive_more::Display;
 use ::itertools::interleave;
@@ -9,8 +8,6 @@ use ::proc_macro::TokenStream;
 use ::proc_macro2::{Span, TokenStream as TokenStream2};
 use ::std::str::FromStr;
 use ::syn::{parse2, spanned::Spanned, Error};
-
-const ATTRIBUTE_PATH: &str = "dataloader";
 
 #[derive(Clone, Copy, Debug, Default, Display, FromMeta)]
 enum TraceLevel {
@@ -47,6 +44,7 @@ impl FromStr for TraceLevel {
 }
 
 #[derive(Clone, Debug, Default, FromMeta)]
+#[darling(default)]
 struct DataloaderAttr {
     #[allow(unused)]
     trace_level: Option<TraceLevel>,
@@ -62,14 +60,8 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, Error> {
+    let attr = DataloaderAttr::from_list(&darling::ast::NestedMeta::parse_meta_list(attr)?)?;
     let item_fn = parse2::<syn::ItemFn>(item)?;
-    let meta = parse2::<syn::Meta>(attr)?;
-
-    if !meta.path().is_ident(ATTRIBUTE_PATH) {
-        return Err(Error::new_spanned(meta.path(), "expected `#[dataloader]`"));
-    }
-
-    let attr = DataloaderAttr::from_meta(&meta)?;
 
     let fn_name = &item_fn.sig.ident;
 
@@ -86,28 +78,26 @@ fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, E
     let (ok_ty, err_ty) = get_fn_return_ok_and_err_types(&item_fn.sig.ident, &item_fn.sig.output)?;
 
     let struct_vis = &item_fn.vis;
-    let key_wrapper_struct_name = format_ident!("{}", format!("{fn_name}").to_case(Case::Pascal));
+    let loader_wrapper_struct_name = format_ident!("{fn_name}_loader");
 
     let value_ty = get_value_ty(ok_ty, &attr.value)?;
 
-    let loader_key_tys =
-        item_fn.sig.inputs
-            .iter()
-            .enumerate()
-            .filter_map(|(i, fn_arg)| {
-                if i == key_index {
-                    None
-                } else {
-                    Some(Ok(match fn_arg {
-                        syn::FnArg::Typed(pat_type) => match &*pat_type.ty {
-                            syn::Type::Reference(type_reference) => &type_reference.elem,
-                            _ => return Some(Err(Error::new_spanned(&pat_type.ty, "dataloader function can only accept references to static types (excluding the `keys` argument which is a reference of a slice of references)"))),
-                        },
-                        _ => unreachable!(),
-                    }))
-                }
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
+    let loader_key_tys = item_fn
+        .sig
+        .inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, fn_arg)| {
+            if i == key_index {
+                None
+            } else {
+                Some(Ok(match fn_arg {
+                    syn::FnArg::Typed(pat_type) => &*pat_type.ty,
+                    _ => unreachable!(),
+                }))
+            }
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
 
     let lifetime = |i: usize| format!("'dataloader{i}");
 
@@ -116,22 +106,17 @@ fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, E
     let num_anonymous_lifetimes = ctx_ty.len() - 1;
 
     let mut new_item_fn = item_fn.clone();
+    new_item_fn.sig.generics.params.push(parse2(quote!(Ctx))?);
     for i in 0..num_anonymous_lifetimes {
-        new_item_fn
-            .sig
-            .generics
-            .params
-            .push(syn::parse_str::<syn::GenericParam>(&lifetime(i))?);
+        new_item_fn.sig.generics.params.push(syn::parse_str(&lifetime(i))?);
     }
 
     let ctx_ty = interleave(ctx_ty.into_iter().map(String::from), (0..num_anonymous_lifetimes).map(lifetime))
         .collect::<Vec<_>>()
         .join("");
-    let ctx_ty = TokenStream2::from_str(&ctx_ty).unwrap();
+    let ctx_ty = syn::parse_str::<syn::Type>(&ctx_ty)?;
 
     let (impl_generics, _, _) = new_item_fn.sig.generics.split_for_impl();
-
-    let derefed_keys_ident = format_ident!("{keys_ident}_derefed");
 
     // define the field tokenstreams conditionally in order to avoid adding unnecessary fields to
     // key wrapper struct
@@ -142,14 +127,7 @@ fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, E
         quote!(),
         quote!(),
         quote!(),
-        quote!(
-            let #keys_ident = #derefed_keys_ident;
-            Ok(#fn_name(#(#fn_call_args),*)
-                .await?
-                .into_iter()
-                .map(|(k, v)| (#key_wrapper_struct_name::from(k), v))
-                .collect())
-        ),
+        quote!(Ok(#fn_name(#(#fn_call_args),*).await?.into_iter().collect())),
     );
 
     #[allow(unused)]
@@ -179,9 +157,8 @@ fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, E
     let context_field_name = format_ident!("context");
 
     #[cfg(feature = "tracing")]
-    let (context_field_defn, context_field_init, impl_as_ref_context_for_wrapper, fn_call) = (
+    let (context_field_defn, context_field_init, fn_call) = (
         quote!(
-            #[derivative(Hash = "ignore", Ord = "ignore", PartialEq = "ignore", PartialOrd = "ignore")]
             #context_field_name: Option<dataloader_util::opentelemetry::Context>,
         ),
         quote!(#context_field_name: {
@@ -193,107 +170,67 @@ fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, E
             Some(context.clone())
         },),
         quote!(
-            impl AsRef<Option<dataloader_util::opentelemetry::Context>> for #key_wrapper_struct_name {
-                fn as_ref(&self) -> &Option<dataloader_util::opentelemetry::Context> {
-                    &self.#context_field_name
-                }
-            }
-        ),
-        quote!(
-            if dataloader_util::should_use_span_context(#keys_ident) {
+            if dataloader_util::should_use_span_context(self.#context_field_name.as_ref()) {
                 use dataloader_util::tracing::Instrument;
                 use dataloader_util::tracing_opentelemetry::OpenTelemetrySpanExt;
-                let #context_field_name = #keys_ident[0].#context_field_name.clone().unwrap();
+                let #context_field_name = self.#context_field_name.clone().unwrap();
 
                 let span = dataloader_util::tracing::#span_macro!("dataloader");
                 span.set_parent(#context_field_name.clone());
 
-                let #keys_ident = #derefed_keys_ident;
-
-                Ok(#fn_name(#(#fn_call_args),*)
-                    .instrument(span)
-                    .await?
-                    .into_iter()
-                    .map(|(key, value)| (#key_wrapper_struct_name { #context_field_name: Some(#context_field_name.clone()), key }, value))
-                    .collect())
+                Ok(#fn_name(#(#fn_call_args),*).instrument(span).await?.into_iter().collect())
             } else {
                 #default_fn_call
             }
         ),
     );
 
+    let hrtb = syn::parse2::<syn::Lifetime>(quote!('a))?;
+    let mut late_bound_ctx_ty = ctx_ty.clone();
+    ReferenceVisitor(hrtb.clone()).visit_type_mut(&mut late_bound_ctx_ty);
+
     let tokens = quote! {
         #item_fn
-        #struct_vis use #fn_name::#key_wrapper_struct_name;
+        #struct_vis use #fn_name::#loader_wrapper_struct_name;
         #struct_vis mod #fn_name {
             use super::*;
+            use ::dataloader_util::async_graphql::dataloader;
 
-            #[derive(Clone, Debug, dataloader_util::DataloaderUtilDerivative)]
-            #[derivative(Eq, Hash, Ord, PartialEq, PartialOrd)]
-            #struct_vis struct #key_wrapper_struct_name {
+            #[allow(non_camel_case_types)]
+            #struct_vis struct #loader_wrapper_struct_name<Ctx: 'static> {
+                ctx: Ctx,
                 #context_field_defn
-                #struct_vis key: #key_ty,
             }
 
-            impl #key_wrapper_struct_name {
-                pub fn new(key: #key_ty) -> #key_wrapper_struct_name {
-                   #key_wrapper_struct_name {
-                        #context_field_init
-                        key,
-                    }
-                }
-            }
-
-            pub fn new(key: #key_ty) -> #key_wrapper_struct_name {
-                #key_wrapper_struct_name {
+            pub fn loader_unchecked<Ctx: ::dataloader_util::Spawner + Clone + Send + Sync + 'static>(ctx: &::dataloader_util::async_graphql::Context<'_>) -> dataloader::DataLoader<#loader_wrapper_struct_name<Ctx>> {
+                let loader = #loader_wrapper_struct_name {
+                    ctx: ctx.data_unchecked::<Ctx>().clone(),
                     #context_field_init
-                    key,
-                }
+                };
+                dataloader::DataLoader::new(loader, Ctx::spawner())
             }
 
-            impl From<#key_ty> for #key_wrapper_struct_name {
-                fn from(key: #key_ty) -> Self {
-                    #key_wrapper_struct_name {
-                        #context_field_init
-                        key,
-                    }
-                }
+            pub fn loader<Ctx: ::dataloader_util::Spawner + Clone + Send + Sync + 'static>(ctx: &::dataloader_util::async_graphql::Context<'_>) -> dataloader_util::async_graphql::Result<dataloader::DataLoader<#loader_wrapper_struct_name<Ctx>>> {
+                let loader = #loader_wrapper_struct_name {
+                    ctx: ctx.data::<Ctx>()?.clone(),
+                    #context_field_init
+                };
+                Ok(dataloader::DataLoader::new(loader, Ctx::spawner()))
             }
 
-            impl From<#key_wrapper_struct_name> for #key_ty {
-                fn from(key_wrapper: #key_wrapper_struct_name) -> Self {
-                    key_wrapper.key
-                }
-            }
-
-            impl std::ops::Deref for #key_wrapper_struct_name {
-                type Target = #key_ty;
-                fn deref(&self) -> &Self::Target {
-                    &self.key
-                }
-            }
-
-            impl std::ops::DerefMut for #key_wrapper_struct_name {
-                fn deref_mut(&mut self) -> &mut Self::Target {
-                    &mut self.key
-                }
-            }
-
-            #impl_as_ref_context_for_wrapper
-
-            #[dataloader_util::async_trait::async_trait]
-            impl #impl_generics async_graphql::dataloader::Loader<#key_wrapper_struct_name> for dataloader_util::BaseLoader<#ctx_ty> {
+            impl #impl_generics dataloader::Loader<#key_ty> for #loader_wrapper_struct_name<Ctx>
+            where
+                Ctx: Send + Sync + 'static,
+                for<#hrtb> &#hrtb Ctx: Into<#late_bound_ctx_ty>,
+            {
                 type Value = #value_ty;
                 type Error = #err_ty;
 
-                #[dataloader_util::async_backtrace::framed]
-                async fn load(&self, #keys_ident: &[#key_wrapper_struct_name]) -> Result<std::collections::HashMap<#key_wrapper_struct_name, Self::Value>, Self::Error> {
-                    let #ctx_ident = self.ctx();
-
-                    let #derefed_keys_ident = #keys_ident.iter().map(std::ops::Deref::deref).collect::<Vec<_>>();
-                    let #derefed_keys_ident: &[&#key_ty] = #derefed_keys_ident.as_slice();
-
-                    #fn_call
+                fn load(&self, #keys_ident: &[#key_ty]) -> impl std::future::Future<Output = Result<std::collections::HashMap<#key_ty, Self::Value>, Self::Error>> {
+                    async {
+                        let #ctx_ident: #ctx_ty = (&self.ctx).into();
+                        #fn_call
+                    }
                 }
             }
         }
@@ -316,24 +253,17 @@ fn get_key_ty_and_index(
                 let ident = &ident.ident;
                 if let syn::Type::Reference(type_reference) = &*pat_type.ty {
                     if let syn::Type::Slice(type_slice) = &*type_reference.elem {
-                        if let syn::Type::Reference(type_reference) = &*type_slice.elem {
-                            Ok((ident, 1, &*type_reference.elem))
-                        } else {
-                            return Err(Error::new_spanned(
-                                fn_arg,
-                                format!("`{ident}` must be a reference to a slice of references"),
-                            ));
-                        }
+                        Ok((ident, 1, &*type_slice.elem))
                     } else {
                         return Err(Error::new_spanned(
                             fn_arg,
-                            format!("`{ident}` must be a reference to a slice of references"),
+                            format!("`{ident}` must be a reference to a slice of keys"),
                         ));
                     }
                 } else {
                     return Err(Error::new_spanned(
                         fn_arg,
-                        format!("`{ident}` must be a reference to a slice of references"),
+                        format!("`{ident}` must be a reference to a slice of keys"),
                     ));
                 }
             } else {
@@ -348,7 +278,18 @@ fn get_key_ty_and_index(
 }
 
 fn get_value_ty<'a>(ok_ty: &'a syn::Type, value_ty: &'a Option<syn::Type>) -> Result<syn::Type, Error> {
-    static ERR_MSG: &str = "unable to parse async_graphql::dataloader::Loader::Value from your dataloader function's return type (automatically parsed include Vec<(K, V)>, Vec<(K, Vec<V>)>, HashMap<K, V>, HashMap<K, Vec<V>>, LoadedOne<K, V> and LoadedMany<K, V> where LoadedOne and LoadedMany are exported from dataloader_util. Note that using LoadedOne and LoadedMany will prevent any confusion of using a Vec type as your V value), please use one of these return types or specify the Value type in the attribute, such as #[dataloader(Value = DbRecord)]";
+    static ERR_MSG: &str = r#"unable to parse async_graphql::dataloader::Loader::Value from your dataloader function's return type, parseable types include:
+- Vec<(K, V)>
+- Vec<(K, Vec<V>)>
+- HashMap<K, V>
+- HashMap<K, Vec<V>>
+- dataloader_util::LoadedOne<K, V>
+- dataloader_util::LoadedMany<K, V>
+where K is the generic parameter on async_graphql::dataloader::Loader and V is the type of the corresponding value for each key.
+A good use case for using LoadedOne/LoadedMany is when the V type in the examples above would itself be a Vec.
+Please use one of these return types or specify the Value type in the attribute, like so: `#[dataloader(Value = DbRecord)]`
+
+"#;
 
     if let Some(value_ty) = value_ty.as_ref() {
         return Ok(value_ty.clone());
@@ -559,7 +500,9 @@ fn get_fn_call_args(
                         syn::Type::Reference(_) => {},
                         _ => return Err(Error::new_spanned(&pat_type.ty, "dataloader function can only accept references to static types (excluding the `keys` argument which is a reference of a slice of references)")),
                     }
-                    let index_token = TokenStream2::from_str(&index.to_string()).unwrap();
+                    // NOTE: may need to switch back to using #ctx_ident.#index_token
+                    // let index_token = TokenStream2::from_str(&index.to_string()).unwrap();
+                    let index_token = syn::Index::from(index);
                     fn_call_args.push(quote! { &#ctx_ident.#index_token });
                     index += 1;
                 }
@@ -569,4 +512,15 @@ fn get_fn_call_args(
     }
 
     Ok(fn_call_args)
+}
+
+use syn::visit_mut::{self, VisitMut};
+
+struct ReferenceVisitor(syn::Lifetime);
+
+impl VisitMut for ReferenceVisitor {
+    fn visit_type_reference_mut(&mut self, node: &mut syn::TypeReference) {
+        node.lifetime = Some(self.0.clone());
+        visit_mut::visit_type_reference_mut(self, node);
+    }
 }
