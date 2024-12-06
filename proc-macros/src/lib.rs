@@ -1,38 +1,29 @@
-#![feature(result_flattening)]
-
 #[macro_use]
 extern crate quote;
-#[macro_use]
-extern crate syn;
 
-use convert_case::{Case, Casing};
-use derivative::Derivative;
-use derive_more::Display;
-use itertools::interleave;
-use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
-use std::str::FromStr;
-use syn::{spanned::Spanned, Error};
-
-macro_rules! fallible {
-    ($($tt:tt)*) => { match $($tt)* { Ok(value) => value, Err(err) => return err } }
-}
+use ::convert_case::{Case, Casing};
+use ::darling::FromMeta;
+use ::derive_more::Display;
+use ::itertools::interleave;
+use ::proc_macro::TokenStream;
+use ::proc_macro2::{Span, TokenStream as TokenStream2};
+use ::std::str::FromStr;
+use ::syn::{parse2, spanned::Spanned, Error};
 
 const ATTRIBUTE_PATH: &str = "dataloader";
 
-#[derive(Clone, Copy, Debug, Derivative, Display)]
-#[derivative(Default)]
+#[derive(Clone, Copy, Debug, Default, Display, FromMeta)]
 enum TraceLevel {
-    #[display(fmt = "debug")]
+    #[display("debug")]
     Debug,
-    #[display(fmt = "error")]
+    #[display("error")]
     Error,
-    #[derivative(Default)]
-    #[display(fmt = "info")]
+    #[default]
+    #[display("info")]
     Info,
-    #[display(fmt = "trace")]
+    #[display("trace")]
     Trace,
-    #[display(fmt = "warn")]
+    #[display("warn")]
     Warn,
 }
 
@@ -55,136 +46,51 @@ impl FromStr for TraceLevel {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, FromMeta)]
 struct DataloaderAttr {
+    #[allow(unused)]
     trace_level: Option<TraceLevel>,
-    value: Option<TokenStream2>,
-}
-
-impl syn::parse::Parse for DataloaderAttr {
-    fn parse(parse_stream: syn::parse::ParseStream) -> Result<Self, Error> {
-        let meta: syn::Meta = match parse_stream.parse() {
-            Ok(meta) => meta,
-            Err(_) => return Ok(Self::default()),
-        };
-
-        let mut trace_level = None;
-        let mut value = None;
-
-        match meta {
-            syn::Meta::List(meta_list) => {
-                if meta_list.path.is_ident(&ATTRIBUTE_PATH) {
-                    for nested_meta in meta_list.nested {
-                        match &nested_meta {
-                            syn::NestedMeta::Meta(meta) => match meta {
-                                syn::Meta::NameValue(meta_name_value) => {
-                                    if meta_name_value.path.is_ident("trace_level") {
-                                        match &meta_name_value.lit {
-                                            syn::Lit::Str(lit_str) => {
-                                                trace_level = Some(TraceLevel::from_str(&lit_str.value())?);
-                                            },
-                                            _ => return Err(Error::new_spanned(&meta_name_value.lit, "expected string literal".to_string())),
-                                        }
-                                    }
-                                    if meta_name_value.path.is_ident("Value") {
-                                        match &meta_name_value.lit {
-                                            syn::Lit::Str(lit_str) => {
-                                                value = Some(lit_str.value().parse()?);
-                                            },
-                                            _ => return Err(Error::new_spanned(&meta_name_value.lit, "expected string literal".to_string())),
-                                        }
-                                    } else {
-                                        return Err(Error::new_spanned(nested_meta, "unexpected argument to dataloader attribute, expected one of: `Value`".to_string()));
-                                    }
-                                },
-                                _ => return Err(Error::new_spanned(nested_meta, "unexpected argument to dataloader attribute, expected one of: `Value`".to_string())),
-                            },
-                            syn::NestedMeta::Lit(lit) => return Err(Error::new_spanned(lit, "unexpected literal, dataloader attribute expects one of: `Value`".to_string())),
-                        }
-                    }
-                }
-            }
-            syn::Meta::Path(path) => {
-                if path.is_ident("Value") {
-                    return Err(Error::new_spanned(
-                        path,
-                        r#"no default Value expected, must provide an explicit Value with the syntax `Value = "T"`"#.to_string(),
-                    ));
-                } else {
-                    return Err(Error::new_spanned(
-                        path,
-                        r#"unexpected argument to dataloader attribute, expected one of: `Value`"#
-                            .to_string(),
-                    ));
-                }
-            }
-            syn::Meta::NameValue(meta_name_value) => {
-                if meta_name_value.path.is_ident("Value") {
-                    match &meta_name_value.lit {
-                        syn::Lit::Str(lit_str) => {
-                            value = Some(lit_str.value().parse()?);
-                        }
-                        _ => {
-                            return Err(Error::new_spanned(
-                                &meta_name_value.lit,
-                                "expected string literal".to_string(),
-                            ))
-                        }
-                    }
-                } else {
-                    return Err(Error::new_spanned(
-                        meta_name_value,
-                        "unexpected argument to dataloader attribute, expected one of: `Value`"
-                            .to_string(),
-                    ));
-                }
-            }
-        };
-
-        Ok(Self { trace_level, value })
-    }
+    value: Option<syn::Type>,
 }
 
 #[proc_macro_attribute]
 pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let item_fn = parse_macro_input!(item as syn::ItemFn);
+    match dataloader2(attr.into(), item.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
 
-    let DataloaderAttr {
-        trace_level: _trace_level,
-        value: value_ty,
-    } = parse_macro_input!(attr as DataloaderAttr);
+fn dataloader2(attr: TokenStream2, item: TokenStream2) -> Result<TokenStream2, Error> {
+    let item_fn = parse2::<syn::ItemFn>(item)?;
+    let meta = parse2::<syn::Meta>(attr)?;
+
+    if !meta.path().is_ident(ATTRIBUTE_PATH) {
+        return Err(Error::new_spanned(meta.path(), "expected `#[dataloader]`"));
+    }
+
+    let attr = DataloaderAttr::from_meta(&meta)?;
 
     let fn_name = &item_fn.sig.ident;
 
     let ctx_ident = format_ident!("ctx");
 
-    let (keys_ident, key_index, key_ty) = fallible!(get_key_ty_and_index(&item_fn.sig.inputs));
+    let (keys_ident, key_index, key_ty) = get_key_ty_and_index(&item_fn.sig.inputs)?;
 
     if item_fn.sig.asyncness.is_none() {
-        return Error::into_compile_error(Error::new(
-            fn_name.span(),
-            "dataloader function must be async",
-        ))
-        .into();
+        return Err(Error::new_spanned(fn_name, "dataloader function must be async"));
     }
 
-    let fn_call_args = fallible!(get_fn_call_args(
-        &item_fn.sig.inputs,
-        keys_ident,
-        &ctx_ident
-    ));
+    let fn_call_args = get_fn_call_args(&item_fn.sig.inputs, keys_ident, &ctx_ident)?;
 
-    let (ok_ty, err_ty) = fallible!(get_fn_return_ok_and_err_types(
-        &item_fn.sig.ident,
-        &item_fn.sig.output
-    ));
+    let (ok_ty, err_ty) = get_fn_return_ok_and_err_types(&item_fn.sig.ident, &item_fn.sig.output)?;
 
     let struct_vis = &item_fn.vis;
     let key_wrapper_struct_name = format_ident!("{}", format!("{fn_name}").to_case(Case::Pascal));
 
-    let value_ty = fallible!(get_value_ty(ok_ty, &value_ty));
+    let value_ty = get_value_ty(ok_ty, &attr.value)?;
 
-    let loader_key_tys = fallible!(
+    let loader_key_tys =
         item_fn.sig.inputs
             .iter()
             .enumerate()
@@ -195,14 +101,13 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
                     Some(Ok(match fn_arg {
                         syn::FnArg::Typed(pat_type) => match &*pat_type.ty {
                             syn::Type::Reference(type_reference) => &type_reference.elem,
-                            _ => return Some(Err(Error::into_compile_error(Error::new(pat_type.ty.span(), "dataloader function can only accept references to static types (excluding the `keys` argument which is a reference of a slice of references)")).into())),
+                            _ => return Some(Err(Error::new_spanned(&pat_type.ty, "dataloader function can only accept references to static types (excluding the `keys` argument which is a reference of a slice of references)"))),
                         },
                         _ => unreachable!(),
                     }))
                 }
             })
-            .collect::<Result<Vec<_>, TokenStream>>()
-    );
+            .collect::<Result<Vec<_>, Error>>()?;
 
     let lifetime = |i: usize| format!("'dataloader{i}");
 
@@ -212,20 +117,16 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut new_item_fn = item_fn.clone();
     for i in 0..num_anonymous_lifetimes {
-        let tokens = TokenStream::from_str(&lifetime(i)).unwrap();
         new_item_fn
             .sig
             .generics
             .params
-            .push(parse_macro_input!(tokens as syn::GenericParam));
+            .push(syn::parse_str::<syn::GenericParam>(&lifetime(i))?);
     }
 
-    let ctx_ty = interleave(
-        ctx_ty.into_iter().map(String::from),
-        (0..num_anonymous_lifetimes).map(lifetime),
-    )
-    .collect::<Vec<_>>()
-    .join("");
+    let ctx_ty = interleave(ctx_ty.into_iter().map(String::from), (0..num_anonymous_lifetimes).map(lifetime))
+        .collect::<Vec<_>>()
+        .join("");
     let ctx_ty = TokenStream2::from_str(&ctx_ty).unwrap();
 
     let (impl_generics, _, _) = new_item_fn.sig.generics.split_for_impl();
@@ -237,12 +138,7 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
     // define the fn call separately because the traced function call requires pre and post work
     // specific to handling tracing properly across await boundaries
     #[allow(unused)]
-    let (
-        default_context_field_defn,
-        default_context_field_init,
-        default_impl_as_ref_context_for_wrapper,
-        default_fn_call,
-    ) = (
+    let (default_context_field_defn, default_context_field_init, default_impl_as_ref_context_for_wrapper, default_fn_call) = (
         quote!(),
         quote!(),
         quote!(),
@@ -260,7 +156,7 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
     let span_macro = Option::<syn::Ident>::None;
 
     #[cfg(feature = "tracing")]
-    let trace_level = _trace_level.unwrap_or_default();
+    let trace_level = attr.trace_level.unwrap_or_default();
 
     #[cfg(feature = "tracing")]
     let span_macro = Some(format_ident!("{trace_level}_span"));
@@ -268,9 +164,7 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[allow(unused_variables)]
     let span_macro = match span_macro {
         Some(span_macro) => span_macro,
-        None => return Error::new(Span::call_site(), "dataloader-util requires a tracing level to be specified using one of the following features: tracing-debug, tracing-error, tracing-info, tracing-trace, tracing-warn. Make sure this matches your application's tracing level otherwise dataloader spans may not be properly reconciled with their parent spans.")
-            .into_compile_error()
-            .into(),
+        None => return Err(Error::new(Span::call_site(), "dataloader-util requires a tracing level to be specified using one of the following features: tracing-debug, tracing-error, tracing-info, tracing-trace, tracing-warn. Make sure this matches your application's tracing level otherwise dataloader spans may not be properly reconciled with their parent spans.")),
     };
 
     #[cfg(not(feature = "tracing"))]
@@ -405,16 +299,14 @@ pub fn dataloader(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    tokens.into()
+    Ok(tokens.into())
 }
 
 fn get_key_ty_and_index(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
-) -> Result<(&syn::Ident, usize, &syn::Type), TokenStream> {
+) -> Result<(&syn::Ident, usize, &syn::Type), Error> {
     if inputs.len() != 2 {
-        return Err(Error::new_spanned(inputs, "expected 2 inputs")
-            .into_compile_error()
-            .into());
+        return Err(Error::new_spanned(inputs, "expected 2 inputs"));
     }
 
     let fn_arg = &inputs[1];
@@ -427,57 +319,42 @@ fn get_key_ty_and_index(
                         if let syn::Type::Reference(type_reference) = &*type_slice.elem {
                             Ok((ident, 1, &*type_reference.elem))
                         } else {
-                            return Err(Error::into_compile_error(Error::new(
-                                fn_arg.span(),
+                            return Err(Error::new_spanned(
+                                fn_arg,
                                 format!("`{ident}` must be a reference to a slice of references"),
-                            ))
-                            .into());
+                            ));
                         }
                     } else {
-                        return Err(Error::into_compile_error(Error::new(
-                            fn_arg.span(),
+                        return Err(Error::new_spanned(
+                            fn_arg,
                             format!("`{ident}` must be a reference to a slice of references"),
-                        ))
-                        .into());
+                        ));
                     }
                 } else {
-                    return Err(Error::into_compile_error(Error::new(
-                        fn_arg.span(),
+                    return Err(Error::new_spanned(
+                        fn_arg,
                         format!("`{ident}` must be a reference to a slice of references"),
-                    ))
-                    .into());
+                    ));
                 }
             } else {
-                Err(
-                    Error::new_spanned(pat_type, "unexpected argument pattern, must be an ident")
-                        .into_compile_error()
-                        .into(),
-                )
+                Err(Error::new_spanned(pat_type, "unexpected argument pattern, must be an ident"))
             }
         }
-        syn::FnArg::Receiver(receiver) => Err(Error::into_compile_error(Error::new(
-            receiver.self_token.span(),
+        syn::FnArg::Receiver(receiver) => Err(Error::new_spanned(
+            receiver.self_token,
             "dataloader function cannot accept a receiver arg",
-        ))
-        .into()),
+        )),
     }
 }
 
-fn get_value_ty<'a>(
-    ok_ty: &'a syn::Type,
-    value_ty: &'a Option<TokenStream2>,
-) -> Result<TokenStream2, TokenStream> {
+fn get_value_ty<'a>(ok_ty: &'a syn::Type, value_ty: &'a Option<syn::Type>) -> Result<syn::Type, Error> {
     static ERR_MSG: &str = "unable to parse async_graphql::dataloader::Loader::Value from your dataloader function's return type (automatically parsed include Vec<(K, V)>, Vec<(K, Vec<V>)>, HashMap<K, V>, HashMap<K, Vec<V>>, LoadedOne<K, V> and LoadedMany<K, V> where LoadedOne and LoadedMany are exported from dataloader_util. Note that using LoadedOne and LoadedMany will prevent any confusion of using a Vec type as your V value), please use one of these return types or specify the Value type in the attribute, such as #[dataloader(Value = DbRecord)]";
 
     if let Some(value_ty) = value_ty.as_ref() {
-        return Ok(quote! { #value_ty });
+        return Ok(value_ty.clone());
     }
 
-    let err = || {
-        Err(Error::new_spanned(ok_ty, ERR_MSG)
-            .into_compile_error()
-            .into())
-    };
+    let err = || Err(Error::new_spanned(ok_ty, ERR_MSG));
 
     match ok_ty {
         syn::Type::Path(type_path) => {
@@ -501,9 +378,9 @@ fn get_value_ty<'a>(
                 };
                 if is_vec_type(second_field_tuple_ty) {
                     let inner_vec_ty = get_inner_vec_ty(second_field_tuple_ty)?;
-                    Ok(quote!(Vec<#inner_vec_ty>))
+                    Ok(parse2(quote!(Vec<#inner_vec_ty>))?)
                 } else {
-                    Ok(quote!(#second_field_tuple_ty))
+                    Ok(second_field_tuple_ty.clone())
                 }
             } else if path_segment.ident == "HashMap" {
                 let inner_ty = match &path_segment.arguments {
@@ -530,9 +407,9 @@ fn get_value_ty<'a>(
                 };
                 if is_vec_type(second_field_tuple_ty) {
                     let inner_vec_ty = get_inner_vec_ty(second_field_tuple_ty)?;
-                    Ok(quote!(Vec<#inner_vec_ty>))
+                    Ok(parse2(quote!(Vec<#inner_vec_ty>))?)
                 } else {
-                    Ok(quote!(#second_field_tuple_ty))
+                    Ok(second_field_tuple_ty.clone())
                 }
             } else if path_segment.ident == "LoadedOne" {
                 match &path_segment.arguments {
@@ -542,7 +419,7 @@ fn get_value_ty<'a>(
                         }
                         let tys: Vec<_> = angle_bracketed_generic_arguments.args.iter().collect();
                         match tys[1] {
-                            syn::GenericArgument::Type(inner_ty) => Ok(quote!(#inner_ty)),
+                            syn::GenericArgument::Type(inner_ty) => Ok(inner_ty.clone()),
                             _ => return err(),
                         }
                     }
@@ -556,7 +433,7 @@ fn get_value_ty<'a>(
                         }
                         let tys: Vec<_> = angle_bracketed_generic_arguments.args.iter().collect();
                         match tys[1] {
-                            syn::GenericArgument::Type(inner_ty) => Ok(quote!(Vec<#inner_ty>)),
+                            syn::GenericArgument::Type(inner_ty) => Ok(parse2(quote!(Vec<#inner_ty>))?),
                             _ => return err(),
                         }
                     }
@@ -581,17 +458,15 @@ fn is_vec_type(ty: &syn::Type) -> bool {
 fn get_fn_return_ok_and_err_types<'a>(
     sig_ident: &syn::Ident,
     sig_output: &'a syn::ReturnType,
-) -> Result<(&'a syn::Type, &'a syn::Type), TokenStream> {
+) -> Result<(&'a syn::Type, &'a syn::Type), Error> {
     static ERR_MSG: &str = "dataloader function return type must have be a Result";
 
     match sig_output {
         syn::ReturnType::Type(_, ty) => match &**ty {
             syn::Type::Path(type_path) => {
-                let err = Error::into_compile_error(Error::new(type_path.span(), ERR_MSG)).into();
+                let err = Error::new(type_path.span(), ERR_MSG);
 
-                if type_path.path.segments.len() != 1
-                    || type_path.path.segments.first().unwrap().ident != "Result"
-                {
+                if type_path.path.segments.len() != 1 || type_path.path.segments.first().unwrap().ident != "Result" {
                     return Err(err);
                 }
                 match &type_path.path.segments.first().unwrap().arguments {
@@ -601,7 +476,7 @@ fn get_fn_return_ok_and_err_types<'a>(
                             return Err(Error::new_spanned(
                                 ty,
                                 "must specify error variant (required to implement async_grahpql::dataloader::Loader and cannot be inferred)",
-                            ).into_compile_error().into());
+                            ));
                         }
                         if num_gen_args != 2 {
                             return Err(err);
@@ -618,23 +493,20 @@ fn get_fn_return_ok_and_err_types<'a>(
                     _ => Err(err),
                 }
             }
-            _ => Err(Error::into_compile_error(Error::new(sig_ident.span(), ERR_MSG)).into()),
+            _ => Err(Error::new(sig_ident.span(), ERR_MSG)),
         },
-        _ => Err(Error::into_compile_error(Error::new(sig_ident.span(), ERR_MSG)).into()),
+        _ => Err(Error::new(sig_ident.span(), ERR_MSG)),
     }
 }
 
-fn get_inner_vec_ty(ty: &syn::Type) -> Result<&syn::Type, TokenStream> {
+fn get_inner_vec_ty(ty: &syn::Type) -> Result<&syn::Type, Error> {
     static ERR_MSG: &str = "expected a Vec type";
 
     match ty {
         syn::Type::Path(type_path) => {
-            let err =
-                || Err(Error::into_compile_error(Error::new(type_path.span(), ERR_MSG)).into());
+            let err = || Err(Error::new_spanned(type_path, ERR_MSG));
 
-            if type_path.path.segments.len() != 1
-                || type_path.path.segments.first().unwrap().ident != "Vec"
-            {
+            if type_path.path.segments.len() != 1 || type_path.path.segments.first().unwrap().ident != "Vec" {
                 return err();
             }
             match &type_path.path.segments.first().unwrap().arguments {
@@ -651,7 +523,7 @@ fn get_inner_vec_ty(ty: &syn::Type) -> Result<&syn::Type, TokenStream> {
                 _ => err(),
             }
         }
-        _ => Err(Error::into_compile_error(Error::new(Span::call_site(), ERR_MSG)).into()),
+        _ => Err(Error::new(Span::call_site(), ERR_MSG)),
     }
 }
 
@@ -667,18 +539,17 @@ fn get_fn_call_args(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
     keys_ident: &syn::Ident,
     ctx_ident: &syn::Ident,
-) -> Result<Vec<TokenStream2>, TokenStream> {
+) -> Result<Vec<TokenStream2>, Error> {
     let mut fn_call_args = Vec::with_capacity(inputs.len());
 
     let mut index = 0;
     for fn_arg in inputs.iter() {
         match fn_arg {
             syn::FnArg::Receiver(receiver) => {
-                return Err(Error::into_compile_error(Error::new(
-                    receiver.self_token.span(),
+                return Err(Error::new_spanned(
+                    receiver.self_token,
                     "dataloader function cannot accept a receiver arg",
-                ))
-                .into())
+                ));
             }
             syn::FnArg::Typed(pat_type) => {
                 if is_keys_ident(pat_type, keys_ident) {
@@ -686,7 +557,7 @@ fn get_fn_call_args(
                 } else {
                     match &*pat_type.ty {
                         syn::Type::Reference(_) => {},
-                        _ => return Err(Error::into_compile_error(Error::new(pat_type.ty.span(), "dataloader function can only accept references to static types (excluding the `keys` argument which is a reference of a slice of references)")).into()),
+                        _ => return Err(Error::new_spanned(&pat_type.ty, "dataloader function can only accept references to static types (excluding the `keys` argument which is a reference of a slice of references)")),
                     }
                     let index_token = TokenStream2::from_str(&index.to_string()).unwrap();
                     fn_call_args.push(quote! { &#ctx_ident.#index_token });

@@ -1,5 +1,3 @@
-#![cfg_attr(feature = "unstable", feature(impl_trait_in_assoc_type))]
-
 #[macro_use]
 extern crate derive_more;
 
@@ -13,9 +11,6 @@ use itertools::Itertools;
 use scoped_futures::*;
 use std::collections::HashMap;
 use std::hash::Hash;
-
-#[cfg(feature = "unstable")]
-use std::fmt::Debug;
 
 /// `'static` lifetime imposed by [async_graphql::dataloader::Loader](https://docs.rs/async-graphql/latest/async_graphql/dataloader/trait.Loader.html)
 pub struct BaseLoader<Ctx: 'static> {
@@ -41,14 +36,10 @@ pub trait LoadedMap {
         F: FnOnce(&Self::Value) -> T;
 }
 
-#[derive(
-    AsRef, AsMut, Clone, Debug, Default, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd,
-)]
+#[derive(AsRef, AsMut, Clone, Debug, Default, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd)]
 pub struct LoadedMany<K, V>(pub Vec<(K, Vec<V>)>);
 
-#[derive(
-    AsRef, AsMut, Clone, Debug, Default, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd,
-)]
+#[derive(AsRef, AsMut, Clone, Debug, Default, Deref, DerefMut, Eq, From, Into, Ord, PartialEq, PartialOrd)]
 pub struct LoadedOne<K, V>(pub Vec<(K, V)>);
 
 impl<K, V> FromIterator<(K, Vec<V>)> for LoadedMany<K, V> {
@@ -79,24 +70,6 @@ impl<K, V> IntoIterator for LoadedOne<K, V> {
     }
 }
 
-#[cfg(feature = "unstable")]
-impl<'a, K: Debug + 'a, V: Debug + 'a> IntoIterator for &'a LoadedMany<K, V> {
-    type Item = &'a V;
-    type IntoIter = impl Debug + Iterator<Item = &'a V>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter().flat_map(|x| x.1.iter())
-    }
-}
-#[cfg(feature = "unstable")]
-impl<'a, K: Debug + 'a, V: Debug + 'a> IntoIterator for &'a LoadedOne<K, V> {
-    type Item = &'a V;
-    type IntoIter = impl Debug + Iterator<Item = &'a V>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter().map(|x| &x.1)
-    }
-}
-
-#[cfg(not(feature = "unstable"))]
 impl<'a, K: 'a, V: 'a> IntoIterator for &'a LoadedMany<K, V> {
     type Item = &'a V;
     type IntoIter = std::iter::FlatMap<
@@ -108,13 +81,9 @@ impl<'a, K: 'a, V: 'a> IntoIterator for &'a LoadedMany<K, V> {
         self.0.iter().flat_map(Box::new(|x| x.1.iter()))
     }
 }
-#[cfg(not(feature = "unstable"))]
 impl<'a, K: 'a, V: 'a> IntoIterator for &'a LoadedOne<K, V> {
     type Item = &'a V;
-    type IntoIter = std::iter::Map<
-        std::slice::Iter<'a, (K, V)>,
-        Box<dyn FnMut(&'a (K, V)) -> &'a V + Send + Sync>,
-    >;
+    type IntoIter = std::iter::Map<std::slice::Iter<'a, (K, V)>, Box<dyn FnMut(&'a (K, V)) -> &'a V + Send + Sync>>;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter().map(Box::new(|x| &x.1))
     }
@@ -134,8 +103,14 @@ impl<K, V> LoadedIterator for LoadedMany<K, V>
 where
     for<'a> &'a LoadedMany<K, V>: IntoIterator,
 {
-    type Item<'a> = &'a V where Self: 'a;
-    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a;
+    type Item<'a>
+        = &'a V
+    where
+        Self: 'a;
+    type Iter<'a>
+        = <&'a Self as IntoIterator>::IntoIter
+    where
+        Self: 'a;
     fn iter(&self) -> Self::Iter<'_> {
         (self).into_iter()
     }
@@ -144,8 +119,14 @@ impl<K, V> LoadedIterator for LoadedOne<K, V>
 where
     for<'a> &'a LoadedOne<K, V>: IntoIterator,
 {
-    type Item<'a> = &'a V where Self: 'a;
-    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a;
+    type Item<'a>
+        = &'a V
+    where
+        Self: 'a;
+    type Iter<'a>
+        = <&'a Self as IntoIterator>::IntoIter
+    where
+        Self: 'a;
     fn iter(&self) -> Self::Iter<'_> {
         (self).into_iter()
     }
@@ -193,65 +174,59 @@ where
 {
     let grouped_keys = keys
         .iter()
-        .group_by(|x| group_by(**x))
+        .chunk_by(|x| group_by(**x))
         .into_iter()
         .map(|(group, keys)| (group, keys.copied().collect()))
         .collect::<Vec<(G, Vec<&'a K>)>>();
 
-    Ok(
-        try_join_all(grouped_keys.iter().map(|(group, keys)| async move {
-            fetch(group, keys)
-                .await
-                .map(|key_values| (group, key_values))
-        }))
-        .await?
-        .into_iter()
-        .flat_map(|(group, key_values)| {
-            let mut grouped_values = HashMap::<K, Vec<V>>::default();
-            for key_value in key_values {
-                let (key, value) = unload(group, key_value);
-
-                #[allow(clippy::map_entry)]
-                if !grouped_values.contains_key(&key) {
-                    grouped_values.insert(key, vec![value]);
-                } else {
-                    grouped_values.get_mut(&key).unwrap().push(value);
-                }
-            }
-            grouped_values.into_iter()
-        })
-        .collect(),
-    )
-}
-
-#[async_backtrace::framed]
-pub async fn dataload_many_group_none<'a, K, V, E, F>(
-    keys: &[&'a K],
-    fetch: F,
-) -> Result<LoadedMany<K, V>, E>
-where
-    K: Clone + Eq + Hash + 'a,
-    for<'r> F: Copy + Fn(&'r &'a K) -> ScopedBoxFuture<'a, 'r, Result<Vec<V>, E>>,
-{
     Ok(try_join_all(
-        keys.iter()
-            .map(|key| async move { fetch(key).await.map(|values| (key, values)) }),
+        grouped_keys
+            .iter()
+            .map(|(group, keys)| async move { fetch(group, keys).await.map(|key_values| (group, key_values)) }),
     )
     .await?
     .into_iter()
-    .flat_map(|(key, values)| {
+    .flat_map(|(group, key_values)| {
         let mut grouped_values = HashMap::<K, Vec<V>>::default();
-        for value in values {
+        for key_value in key_values {
+            let (key, value) = unload(group, key_value);
+
             #[allow(clippy::map_entry)]
-            if !grouped_values.contains_key(key) {
-                grouped_values.insert((**key).clone(), vec![value]);
+            if !grouped_values.contains_key(&key) {
+                grouped_values.insert(key, vec![value]);
             } else {
-                grouped_values.get_mut(key).unwrap().push(value);
+                grouped_values.get_mut(&key).unwrap().push(value);
             }
         }
         grouped_values.into_iter()
     })
     .collect())
+}
+
+#[async_backtrace::framed]
+pub async fn dataload_many_group_none<'a, K, V, E, F>(keys: &[&'a K], fetch: F) -> Result<LoadedMany<K, V>, E>
+where
+    K: Clone + Eq + Hash + 'a,
+    for<'r> F: Copy + Fn(&'r &'a K) -> ScopedBoxFuture<'a, 'r, Result<Vec<V>, E>>,
+{
+    Ok(
+        try_join_all(keys.iter().map(|key| async move { fetch(key).await.map(|values| (key, values)) }))
+            .await?
+            .into_iter()
+            .flat_map(|(key, values)| {
+                let mut grouped_values = HashMap::<K, Vec<V>>::default();
+                for value in values {
+                    #[allow(clippy::map_entry)]
+                    if !grouped_values.contains_key(key) {
+                        grouped_values.insert((**key).clone(), vec![value]);
+                    } else {
+                        grouped_values.get_mut(key).unwrap().push(value);
+                    }
+                }
+                grouped_values.into_iter()
+            })
+            .collect(),
+    )
 }
 
 #[async_backtrace::framed]
@@ -270,51 +245,33 @@ where
 {
     let grouped_keys = keys
         .iter()
-        .group_by(|x| group_by(**x))
+        .chunk_by(|x| group_by(**x))
         .into_iter()
         .map(|(group, keys)| (group, keys.copied().collect()))
         .collect::<Vec<(G, Vec<&'a K>)>>();
 
-    Ok(
-        try_join_all(grouped_keys.iter().map(|(group, keys)| async move {
-            fetch(group, keys)
-                .await
-                .map(|key_values| (group, key_values))
-        }))
-        .await?
-        .into_iter()
-        .flat_map(|(group, key_values)| {
-            key_values
-                .into_iter()
-                .map(|key_value| unload(group, key_value))
-        })
-        .collect(),
+    Ok(try_join_all(
+        grouped_keys
+            .iter()
+            .map(|(group, keys)| async move { fetch(group, keys).await.map(|key_values| (group, key_values)) }),
     )
+    .await?
+    .into_iter()
+    .flat_map(|(group, key_values)| key_values.into_iter().map(|key_value| unload(group, key_value)))
+    .collect())
 }
 
 #[async_backtrace::framed]
-pub async fn dataload_many_ungrouped<'a, K, V, E, F>(
-    keys: &[&'a K],
-    fetch: F,
-) -> Result<LoadedMany<K, V>, E>
+pub async fn dataload_many_ungrouped<'a, K, V, E, F>(keys: &[&'a K], fetch: F) -> Result<LoadedMany<K, V>, E>
 where
     K: Eq + Hash + 'a,
     for<'r> F: Copy + Fn(&'r [&'a K]) -> ScopedBoxFuture<'a, 'r, Result<Vec<(K, V)>, E>>,
 {
-    dataload_many(
-        keys,
-        |_| (),
-        |_: &(), keys| fetch(keys),
-        |_, key_value| key_value,
-    )
-    .await
+    dataload_many(keys, |_| (), |_: &(), keys| fetch(keys), |_, key_value| key_value).await
 }
 
 #[async_backtrace::framed]
-pub async fn dataload_one_individually<'a, K, V, E, F>(
-    keys: &[&'a K],
-    fetch: F,
-) -> Result<LoadedOne<K, V>, E>
+pub async fn dataload_one_individually<'a, K, V, E, F>(keys: &[&'a K], fetch: F) -> Result<LoadedOne<K, V>, E>
 where
     K: Clone + Eq + Hash + Send + Sync + 'a,
     for<'r> F: Copy + Send + Sync + Fn(&'r K) -> ScopedBoxFuture<'a, 'r, Result<V, E>>,

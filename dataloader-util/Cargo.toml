@@ -9,4 +9,8 @@ dataloader-util-proc-macros.workspace = true
 
 [features]
 tracing = ["dataloader-util-core/tracing", "dataloader-util-proc-macros/tracing"]
-unstable = ["dataloader-util-core/unstable"]
+tracing-debug = ["dataloader-util-core/tracing-debug"]
+tracing-error = ["dataloader-util-core/tracing-error"]
+tracing-info = ["dataloader-util-core/tracing-info"]
+tracing-trace = ["dataloader-util-core/tracing-trace"]
+tracing-warn = ["dataloader-util-core/tracing-warn"]

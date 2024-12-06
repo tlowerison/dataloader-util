@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 async-backtrace.workspace = true
 convert_case.workspace = true
-derivative.workspace = true
+darling.workspace = true
 derive_more.workspace = true
 itertools.workspace = true
 proc-macro2.workspace = true
